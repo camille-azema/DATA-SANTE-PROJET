@@ -1,0 +1,270 @@
+---
+title: "DATA-SANTE_PROJET-AZEMA-LIN"
+output: html_notebook
+---
+
+Chargement des données
+```{r}
+heart <- read.csv("heart_statlog_cleveland_hungary_final.csv")
+
+#Vérification des données manquantes
+heart[heart == "N/A"] <- NA
+
+missing_values <- any(is.na(heart))
+
+#calculate the sum of missing values
+colSums(is.na(heart))
+```
+
+Structure des données
+```{r}
+heart=data.frame(
+  Age=heart[,1],
+  Sex=factor(as.factor(heart[,2]),labels=c("sxF","sxM")),
+  Chest_pain_type=factor(as.factor(heart[,3]),labels=c("V1","V2","V3","V4")),
+  Resting_bp_s=heart[,4],
+  Cholesterol=heart[,5],
+  Fasting_blood_sugar=factor(as.factor(heart[,6]),labels=c("T","F")),
+  Resting_ecg=factor(as.factor(heart[,7]),labels=c("Nor","ANor","Estes")),
+  Max_heart_rate=heart[,8],
+  Exercise_angina=factor(as.factor(heart[,9]),labels=c("Non","Oui")),
+  oldpeak=heart[,10],
+  ST_slope=factor(as.factor(heart[,11]),labels=c("Zero","Up","Flat","Down")),
+  target=factor(as.factor(heart[,12]),labels=c("Health","Disease")))
+
+str(heart)
+```
+
+Equilibre du jeu de données 
+```{r}
+round(prop.table(table(heart$target)), 2)
+#Il y a 53% de personnes atteintes d'une maladie cardiaque dans l'échantillon
+```
+
+Boxplot
+```{r}
+
+#le risque de crise cardiaque augmente avec l'âge
+boxplot(Age~target,data=heart,col = c("#F8C5BE","#A2272C"),ylab="Age")
+
+#le risque de crise cardiaque augmente avec l'âge et le sexe
+boxplot(Age~target+Sex,data=heart,col = c("#F8C5BE","#A2272C"),ylab="Age")
+
+boxplot(Cholesterol~target+Sex,data=heart,col = c("#F8C5BE","#A2272C"), ylab="Cholesterol")
+
+boxplot(Resting_bp_s~target+Sex,data=heart,col = c("#F8C5BE","#A2272C"),ylab="Resting_bp_s")
+
+boxplot(Max_heart_rate~target+Sex,data=heart,col = c("#F8C5BE","#A2272C"),ylab="Max_heart_rate")
+
+```
+
+Test de Wilcoxon
+```{r}
+wilcox.test(Age~target,data=heart)
+wilcox.test(Resting_bp_s~target,data=heart)
+wilcox.test(Cholesterol~target,data=heart)
+wilcox.test(Max_heart_rate~target,data=heart)
+wilcox.test(oldpeak~target,data=heart)
+
+#Ici p-value = 2.2e-16 ici elle est très petite donc la probabilité de ne pas observer cette différence est très petite)
+#Donc l'âge est un facteur de risque pour les attaques cardiaques
+```
+
+Variable quantitatives
+```{r}
+#On récupère les données quantitatives
+AgeQ=cut(heart$Age,breaks=quantile(heart$Age,c(0,.33,.66,1)),labels=c("AgeA","AgeB","AgeC"),include.lowest = TRUE)
+RestQ=cut(heart$Resting_bp_s,breaks=quantile(heart$Resting_bp_s,c(0,.33,.66,1)),labels=c("RestA","RestB","RestC"),include.lowest = TRUE)
+CholQ=cut(heart$Cholesterol,breaks=quantile(heart$Cholesterol,c(0,.33,.66,1)),labels=c("CholA","CholB","CholC"),include.lowest = TRUE)
+RateQ=cut(heart$Max_heart_rate,breaks=quantile(heart$Max_heart_rate,c(0,.33,.66,1)),labels=c("RateA","RateB","RateC"),include.lowest = TRUE)
+oldpeakQ=cut(heart$oldpeak,breaks=quantile(heart$oldpeak,c(0,.33,.66,1)),labels=c("PicA","PicB","PIcC"),include.lowest = TRUE)
+
+#On les met dans un nouveau jeu de données
+heartT=data.frame(heart,AgeQ,RestQ,CholQ,RateQ,oldpeakQ)
+
+#Sélection des variables qualitatives
+heartQ=heartT[,-c(1,4,5,8,10)]
+summary(heartQ)
+```
+
+Histogrammes 
+```{r}
+hist_color <- "#A2272C"
+par(mfrow=c(2,3))  # Disposition de sous-graphiques
+for (i in 1:12) {
+  if(is.numeric(heart[, i])) {  # Vérifie si la variable est numérique
+    hist(heart[, i],col = hist_color, main = names(heart)[i])
+  } else {
+    cat("Variable", names(heart)[i], "n'est pas numérique. Elle sera ignorée.\n")
+  }
+}
+```
+
+Analyse des correspondances multiples
+```{r}
+library(ade4)
+d<-heartQ
+var_sup <- heartQ[,"target"]
+acm <- dudi.acm(d, scannf = FALSE, nf = 5)
+
+#Variable supplémentaire : variable cible Heart attack
+acm$supv <- supcol(acm, dudi.acm(var_sup, scannf = FALSE, nf = 5)$tab)
+
+library(explor)
+library(FactoMineR)
+heart_mca=MCA(heartQ,quali.sup =c(7))
+```
+
+Clustering hiérarchique
+```{r}
+HCPC(heart_mca)
+```
+
+
+PARTIE MACHINE LEARNING
+
+Reproductibilité des tests
+```{r}
+set.seed(18)
+library(caret)
+```
+
+Séparation des données
+```{r}
+df_sampling_index <- createDataPartition(heart$target, times = 1, p = .7, list = FALSE) #On prend 70% des données pour l'apprentissage
+
+df_training <- heart[df_sampling_index,]
+df_testing <- heart[-df_sampling_index,]
+
+
+prop.table(table(df_training$target))
+prop.table(table(df_testing$target))
+```
+
+Régression linéaire
+```{r}
+
+# On définit le cadre général
+df_control <- trainControl(method="cv", #Cross-validation
+                           number = 5, 
+                           classProbs=TRUE, 
+                           summaryFunction = twoClassSummary) #Classification binaire
+
+# Entraîner le modèle de régression logistique binaire
+model <- glm(target ~., data = df_training, family = binomial(link="logit"))
+
+summary(model) #certains paramètres ne sont pas significatifs
+
+#Afficher les résultats
+print(model)
+# Faire des prédictions sur l'ensemble de test
+prediction_glm <- predict(model, df_testing, type = "response")
+
+# Convertir les probabilités en classes 
+prediction_glm <- ifelse(prediction_glm<0.5, "Health", "Disease")
+
+
+## Évaluation des performances du modèle
+
+#Matrice de confusion
+conf_matrix <- table(prediction_glm, df_testing$target)
+
+#Erreur de prédiction
+err_glm <- 1-(sum(diag(conf_matrix))/sum(conf_matrix))
+print(err_glm)
+
+```
+
+
+Random Forest
+```{r}
+
+# Définir le cadre général pour l'optimisation
+df_control <- trainControl(method = "cv", # Validation croisée
+                           number = 5, # Validation croisée à 5 plis
+                           classProbs = TRUE, # Calculer les probabilités de classe
+                           summaryFunction = twoClassSummary) # Fonction de résumé pour les métriques de classification binaire
+
+### FORET ALÉATOIRE
+
+# Entraîner le modèle de forêt aléatoire avec la fonction train
+model_rf <- train(target ~., data = df_training, method = "rf",
+                  trControl = df_control,
+                  metric = "Accuracy")
+summary(model_rf)
+# Afficher le résumé du modèle
+print(model_rf)
+
+# Prédiction sur l'ensemble de test
+prediction_rf <- predict(model_rf, df_testing)
+
+# Créer la matrice de confusion
+matconfus_rf <- table(prediction_rf, df_testing$target)
+print(matconfus_rf)
+
+# Calculer le taux d'erreur de prédiction
+err_rf <- 1 - (sum(diag(matconfus_rf)) / sum(matconfus_rf))
+print(err_rf)
+
+```
+
+
+SVM
+```{r}
+######SUPPORT VECTOR MACHINE
+
+#Charger le package requis pour SVM 
+#install.packages("e1071")
+library(e1071)
+
+# Définir les paramètres de validation croisée
+df_control <- trainControl(method = "cv", 
+                           number = 5, 
+                           classProbs = TRUE, 
+                           summaryFunction = twoClassSummary) 
+
+
+## Entraîner le modèle SVM
+svm_model <- svm(target ~ ., data = df_training, kernel = "sigmoid", probability = TRUE, trControl = df_control)
+
+# Afficher le résumé du modèle
+summary(svm_model)
+
+
+# Faire des prédictions sur l'ensemble de test
+prediction_svm <- predict(svm_model, df_testing, probability = TRUE)
+
+
+# Obtenir les probabilités de la classe positive ("Disease")
+probabilities <- attr(prediction_svm, "probabilities")
+prediction_svm <- ifelse(probabilities[, "Disease"] > 0.5, "Disease", "Health")
+
+# Matrice de confusion
+conf_matrix <- table(Predicted = prediction_svm, True = df_testing$target)
+
+# Calculer le taux d'erreur
+err_svm <- 1 - (sum(diag(conf_matrix)) / sum(conf_matrix))
+print(err_svm)
+
+
+
+model_glm_tuned = train(target ~.,
+                        df_training, method = "glmStepAIC", ## selection forward par minimisation de l'AIC
+                        metric="ROC",
+                        tuneLength = 10, # soit on fixe une grille de parametres a tester (tuneGrid) soit on fixe un nombre max de parametres que l'on souhaite tester (tuneLength) => R choisit
+                        trControl = df_control)
+
+summary(model_glm_tuned$finalModel) # le model final optimise ne contient plus que 8 variables
+
+
+prediction_glm_tuned <- predict(model_glm_tuned, df_testing)#, type="response")
+
+
+matconfus_glm_tuned <- table(prediction_glm_tuned, df_testing$target)
+matconfus_glm_tuned
+
+err_glm_tuned <- 1-(sum(diag(matconfus_glm_tuned)) / sum(matconfus_glm_tuned))
+err_glm_tuned
+
+```
+
